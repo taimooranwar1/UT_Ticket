@@ -45,8 +45,9 @@
     // Stop trying at this local time. Months are 0-indexed: 8 === September.
     deadline: new Date(2026, 8, 12, 16, 30, 0),
 
-    // Seconds between attempts.
-    intervalSeconds: 20,
+    // Seconds to wait between attempts. Measured from the END of one attempt
+    // to the start of the next, so attempts never overlap.
+    intervalSeconds: 5,
 
     // How many tickets to select (how many times to click the "+" icon).
     quantity: 1,
@@ -61,12 +62,17 @@
     // rely on the pre-filled Gmail compose tab instead.
     ntfyTopic: '',
 
-    // Text that identifies the "no luck, try again" modal. Case-insensitive,
-    // any one match is enough.
+    // Text identifying a dialog that means "no luck, dismiss and try again".
+    // Case-insensitive; any one match is enough. Anything matching these is
+    // explicitly NOT treated as a ticket.
     errorMarkers: [
+      // "Seats Not Found"
       'seats not found',
       'no seats that matched',
-      'adjust your selections'
+      'adjust your selections',
+      // "Oops! There was an error processing your request."
+      'error processing your request',
+      'oops'
     ],
 
     // Button label matching (case-insensitive substring).
@@ -104,6 +110,7 @@
   }, loadState());
 
   let timer = null;
+  let busy = false;
 
   const log = (...args) => console.log('%c[UTBOT]', 'color:#bf5700;font-weight:bold', ...args);
 
@@ -253,6 +260,15 @@
     return CONFIG.errorMarkers.some((m) => text.includes(m.toLowerCase()));
   }
 
+  // Which of the known dud dialogs is on screen, for the log line.
+  function describeDismissal() {
+    const modal = errorModal();
+    const text = ((modal && modal.innerText) || pageText()).toLowerCase();
+    if (text.includes('seats not found') || text.includes('no seats that matched')) return '"Seats Not Found"';
+    if (text.includes('error processing your request') || text.includes('oops')) return '"Oops!" server error';
+    return 'a known error dialog';
+  }
+
   // Prefer the OK button inside the error dialog over any other OK on the page.
   function findOkButton() {
     const modal = errorModal();
@@ -335,7 +351,7 @@
     state.alerted = true;
     state.running = false;
     saveState(state);
-    clearInterval(timer);
+    clearTimeout(timer);
 
     log('%cTICKET FOUND -- ' + reason, 'color:#fff;background:#bf5700;font-size:20px;padding:4px');
     document.title = '🎟️ TICKET FOUND 🎟️';
@@ -359,6 +375,23 @@
   // ===========================================================================
   // One attempt
   // ===========================================================================
+  // Runs one attempt, then schedules the next -- gap measured from completion,
+  // so a slow attempt can never have a second one pile up behind it.
+  async function tick() {
+    if (busy) return;
+    busy = true;
+    try {
+      await attempt();
+    } catch (e) {
+      log('attempt threw:', e);
+    } finally {
+      busy = false;
+      if (state.running && !state.alerted) {
+        timer = setTimeout(tick, CONFIG.intervalSeconds * 1000);
+      }
+    }
+  }
+
   async function attempt() {
     if (!state.running || state.alerted) return;
 
@@ -366,7 +399,7 @@
       log('deadline reached (' + CONFIG.deadline.toLocaleString() + ') -- stopping. No ticket.');
       state.running = false;
       saveState(state);
-      clearInterval(timer);
+      clearTimeout(timer);
       return;
     }
 
@@ -417,8 +450,9 @@
     for (let waited = 0; waited < 9000; waited += 500) {
       await sleep(500);
       if (errorModalPresent()) {
-        log('  -> "Seats Not Found". Dismissing, will retry in ' + CONFIG.intervalSeconds + 's.');
+        log('  -> ' + describeDismissal() + '. Dismissing, retrying in ' + CONFIG.intervalSeconds + 's.');
         click(findOkButton(), 'OK');
+        await sleep(500);
         return;
       }
       if (location.href !== urlBefore) {
@@ -455,15 +489,15 @@
       state.running = true;
       state.alerted = false;
       saveState(state);
-      clearInterval(timer);
-      attempt();
-      timer = setInterval(attempt, CONFIG.intervalSeconds * 1000);
+      clearTimeout(timer);
+      busy = false;
+      tick();
       log('started. every ' + CONFIG.intervalSeconds + 's until ' + CONFIG.deadline.toLocaleString());
     },
     stop() {
       state.running = false;
       saveState(state);
-      clearInterval(timer);
+      clearTimeout(timer);
       log('stopped.');
     },
     status() {

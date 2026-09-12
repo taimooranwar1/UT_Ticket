@@ -1,8 +1,8 @@
 # Longhorns FB26 Ticket Retry Bot
 
-Retries "Find Best Available" on
-<https://texaslonghorns.evenue.net/students/combo/FB26/FB02S> every 20 seconds
-until either a result appears that is *not* the "Seats Not Found" error, or the
+Retries "Find Best Available" every 5 seconds on
+<https://texaslonghorns.evenue.net/students/combo/FB26/FB02S> 
+until either a result appears that is not one of the known dud dialogs, or the
 deadline (Sep 12, 2026, 4:30 PM local) passes.
 
 This runs **in your own browser**, in the tab that is already logged in. It is a
@@ -36,8 +36,13 @@ Either way it starts on its own. Console controls:
    quantity field if no plus icon is found.
 3. Click **Find Best Available**.
 4. Poll the page for up to 9 seconds:
-   - "Seats Not Found" text appears → click **OK**, wait out the rest of the 20s, retry.
-   - URL changes, or 9s pass with no error → **treat as a hit** and alert.
+   - A known dud dialog appears → click **OK** and retry. Two are recognized:
+     **"Seats Not Found"** and **"Oops! There was an error processing your
+     request."** Neither counts as a ticket.
+   - URL changes, or 9s pass with no dialog → **treat as a hit** and alert.
+
+The 5-second gap is measured from the *end* of one attempt to the start of the
+next, so a slow response can't stack overlapping attempts.
 
 ## The alert
 
@@ -92,7 +97,9 @@ anything — worth one cycle before you leave it unattended.
 
 ## Also worth knowing
 
-Twenty-second polling against a ticketing site is a rate you should be
-comfortable defending; evenue's terms may prohibit automated access, and
-aggressive retries can get an account throttled or blocked. The interval is a
-single number at the top of CONFIG if you want it gentler.
+Five-second polling is aggressive — roughly 12 requests a minute, sustained.
+evenue's terms may prohibit automated access, and at this rate an account is
+considerably more likely to get throttled or blocked than at 20s. The repeated
+"Oops! There was an error processing your request." dialog may itself be the
+server pushing back. If you start seeing it constantly, raise
+`intervalSeconds`; hammering harder won't produce seats that aren't there.
