@@ -68,7 +68,17 @@ The email then sends itself the moment a ticket is found, and the Gmail compose
 tab still opens as a backup. Note that this routes the notification through a
 third-party service — the only content sent is "TICKET FOUND" and the page URL.
 
-## If it can't find the buttons
+## "could not find the button" / "no plus icon"
+
+Almost always the wrong tab. The script now refuses to run anywhere except
+`*.evenue.net` and says so in red — if you see that, paste it into the console
+of the FB26 tab rather than whatever tab is focused.
+
+(The earlier version would happily run on any page, and on a page that merely
+*displayed* the words "Seats Not Found" it would report a phantom error modal.
+Error detection is now scoped to dialog-shaped containers first.)
+
+## If it still can't find the buttons
 
 The selectors are text-based (`"Find Best Available"`, `"OK"`, a literal `+`)
 and search same-origin iframes too, but the page is behind a login so the exact

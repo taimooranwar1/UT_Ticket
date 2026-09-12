@@ -73,6 +73,13 @@
     findButtonText: ['find best available', 'best available'],
     okButtonText: ['ok', 'okay', 'close', 'continue'],
 
+    // Only run on the ticketing site. This is what stops the script from
+    // firing on some other tab (e.g. a chat window that happens to contain
+    // the words "Seats Not Found") and reporting nonsense. Set to true only
+    // if you know what you're doing.
+    allowAnyHost: false,
+    hostPattern: /evenue\.net$/i,
+
     // Set true to watch every step in the console without clicking anything.
     dryRun: false
   };
@@ -129,32 +136,62 @@
     ).trim();
   }
 
-  const CLICKABLE = 'button, input[type=button], input[type=submit], input[type=image], a, [role=button], [onclick], span.plus, div.plus, .qty-plus, .increment';
+  const CLICKABLE = [
+    'button', 'input[type=button]', 'input[type=submit]', 'input[type=image]',
+    'a', 'img', 'label', '[role=button]', '[onclick]', '[class*=btn]',
+    '[class*=button]', '[class*=plus]', '[id*=plus]', '[class*=qty]',
+    '[id*=qty]', '[class*=increment]', '[class*=arrow]'
+  ].join(', ');
 
   function clickables() {
     const out = [];
+    const seen = new Set();
     for (const doc of documents()) {
       for (const el of doc.querySelectorAll(CLICKABLE)) {
-        if (visible(el)) out.push(el);
+        if (visible(el) && !seen.has(el)) { seen.add(el); out.push(el); }
+      }
+      // Anything the page styles as clickable, even a bare div or td.
+      for (const el of doc.querySelectorAll('div, span, td, li')) {
+        if (seen.has(el) || !visible(el)) continue;
+        const view = el.ownerDocument.defaultView || window;
+        if (view.getComputedStyle(el).cursor === 'pointer') { seen.add(el); out.push(el); }
       }
     }
     return out;
   }
 
+  // Resolve an arbitrary element to the thing that should actually be clicked.
+  function asClickable(el) {
+    if (!el) return null;
+    const hit = el.closest('button, input, a, [role=button], [onclick]');
+    return hit && visible(hit) ? hit : el;
+  }
+
   function findByText(candidates) {
     const wanted = candidates.map((c) => c.toLowerCase());
-    const els = clickables();
-    // Prefer the shortest label that matches -- "OK" should beat
-    // "OK, take me to my account settings".
     let best = null;
-    for (const el of els) {
+    let bestLen = Infinity;
+
+    const consider = (el) => {
       const text = labelOf(el).toLowerCase();
-      if (!text) continue;
-      if (wanted.some((w) => text.includes(w))) {
-        if (!best || text.length < labelOf(best).length) best = el;
+      if (!text || text.length > 120) return;
+      if (!wanted.some((w) => text.includes(w))) return;
+      // Prefer the shortest match: "OK" should beat "OK, go to settings",
+      // and the button itself should beat the panel containing it.
+      if (text.length < bestLen) { bestLen = text.length; best = el; }
+    };
+
+    for (const el of clickables()) consider(el);
+    if (best) return asClickable(best);
+
+    // Nothing in the clickable set matched. The label may live in a plain
+    // element with the real handler on an ancestor -- evenue does this.
+    for (const doc of documents()) {
+      for (const el of doc.querySelectorAll('*')) {
+        if (el.children.length === 0 && visible(el)) consider(el);
       }
     }
-    return best;
+    return asClickable(best);
   }
 
   function findPlusButton() {
@@ -191,9 +228,47 @@
     return text.toLowerCase();
   }
 
+  const DIALOGISH = '[role=dialog], [aria-modal=true], dialog, .modal, .ui-dialog, .popup, .overlay, .lightbox, [class*=modal], [class*=dialog]';
+
+  // Returns the dialog element showing the "Seats Not Found" error, or null.
+  // Scoped to dialog-looking containers first so that stray text elsewhere on
+  // the page can't be mistaken for the modal.
+  function errorModal() {
+    const markers = CONFIG.errorMarkers.map((m) => m.toLowerCase());
+    for (const doc of documents()) {
+      for (const el of doc.querySelectorAll(DIALOGISH)) {
+        if (!visible(el)) continue;
+        const text = (el.innerText || '').toLowerCase();
+        if (markers.some((m) => text.includes(m))) return el;
+      }
+    }
+    return null;
+  }
+
   function errorModalPresent() {
+    if (errorModal()) return true;
+    // Fallback: the modal may not use any recognizable dialog markup. Only
+    // trusted because the host guard has already confirmed we're on evenue.
     const text = pageText();
     return CONFIG.errorMarkers.some((m) => text.includes(m.toLowerCase()));
+  }
+
+  // Prefer the OK button inside the error dialog over any other OK on the page.
+  function findOkButton() {
+    const modal = errorModal();
+    if (modal) {
+      const wanted = CONFIG.okButtonText.map((t) => t.toLowerCase());
+      let best = null;
+      for (const el of modal.querySelectorAll(CLICKABLE)) {
+        if (!visible(el)) continue;
+        const text = labelOf(el).toLowerCase();
+        if (text && wanted.some((w) => text.includes(w))) {
+          if (!best || text.length < labelOf(best).length) best = el;
+        }
+      }
+      if (best) return asClickable(best);
+    }
+    return findByText(CONFIG.okButtonText);
   }
 
   function click(el, what) {
@@ -301,7 +376,7 @@
 
     // 1. Clear the error modal if it is still up from last time.
     if (errorModalPresent()) {
-      click(findByText(CONFIG.okButtonText), 'OK on leftover error modal');
+      click(findOkButton(), 'OK on leftover error modal');
       await sleep(700);
     }
 
@@ -343,7 +418,7 @@
       await sleep(500);
       if (errorModalPresent()) {
         log('  -> "Seats Not Found". Dismissing, will retry in ' + CONFIG.intervalSeconds + 's.');
-        click(findByText(CONFIG.okButtonText), 'OK');
+        click(findOkButton(), 'OK');
         return;
       }
       if (location.href !== urlBefore) {
@@ -402,6 +477,7 @@
       });
     },
     inspect() {
+      log('host:', location.hostname, '| iframes:', document.querySelectorAll('iframe, frame').length);
       const rows = clickables().map((el) => ({
         tag: el.tagName,
         label: labelOf(el).slice(0, 60),
@@ -409,9 +485,23 @@
         class: typeof el.className === 'string' ? el.className.slice(0, 60) : ''
       }));
       console.table(rows);
+
+      // Anything on the page mentioning availability/quantity, clickable or
+      // not -- this is what to feed back if the buttons still aren't found.
+      const hints = [];
+      for (const doc of documents()) {
+        for (const el of doc.querySelectorAll('*')) {
+          if (el.children.length || !visible(el)) continue;
+          const text = labelOf(el);
+          if (text && text.length < 80 && /(available|quantity|qty|seat|\+)/i.test(text)) {
+            hints.push({ tag: el.tagName, text: text.slice(0, 60), id: el.id, class: String(el.className).slice(0, 40) });
+          }
+        }
+      }
+      console.table(hints);
       log('plus candidate:', findPlusButton());
       log('find-best candidate:', findByText(CONFIG.findButtonText));
-      log('ok candidate:', findByText(CONFIG.okButtonText));
+      log('ok candidate:', findOkButton());
       return rows.length + ' clickable elements';
     },
     testAlert() { state.alerted = false; alertSuccess('TEST -- not a real ticket'); },
@@ -423,6 +513,22 @@
 
   if (Notification && Notification.permission === 'default') {
     Notification.requestPermission();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Host guard: refuse to run anywhere but the ticketing site.
+  // ---------------------------------------------------------------------------
+  const onTicketSite = CONFIG.hostPattern.test(location.hostname);
+  if (!onTicketSite && !CONFIG.allowAnyHost) {
+    console.error(
+      '%c[UTBOT] WRONG TAB\n' +
+      'This is ' + location.hostname + ', not the evenue ticketing site.\n' +
+      'Open https://texaslonghorns.evenue.net/students/combo/FB26/FB02S in your\n' +
+      'logged-in window, then paste this script into THAT tab\'s console.',
+      'color:#fff;background:#c00;font-size:14px;padding:6px'
+    );
+    window.__UTBOT_LOADED__ = false;
+    return;
   }
 
   checkResumeAfterNavigation();
