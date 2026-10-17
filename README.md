@@ -8,6 +8,23 @@ deadline (Sep 12, 2026, 4:30 PM local) passes.
 This runs **in your own browser**, in the tab that is already logged in. It is a
 page script, not a server — nothing outside your machine touches your session.
 
+## Setting the deadline
+
+`deadlineText` at the top of CONFIG, as `'YYYY-MM-DD HH:MM'` on a 24-hour clock
+in your own timezone:
+
+```js
+deadlineText: '2026-10-17 16:30',
+```
+
+If it's already in the past the bot refuses to start and prints a red box
+telling you so — it will not quietly run forever. To set a new one without
+editing the file, in the console:
+
+```js
+UTBOT.setDeadline('2026-10-17 16:30'); UTBOT.start()
+```
+
 ## Running it
 
 **Tampermonkey (recommended).** Install the extension, create a new script,

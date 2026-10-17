@@ -42,8 +42,10 @@
   // CONFIG -- edit these
   // ===========================================================================
   const CONFIG = {
-    // Stop trying at this local time. Months are 0-indexed: 8 === September.
-    deadline: new Date(2026, 8, 12, 16, 30, 0),
+    // Stop trying at this local time. Plain 'YYYY-MM-DD HH:MM', 24-hour clock,
+    // your own timezone. EDIT THIS -- an expired deadline means the bot
+    // refuses to start.
+    deadlineText: '2026-09-12 16:30',
 
     // Seconds to wait between attempts. Measured from the END of one attempt
     // to the start of the next, so attempts never overlap.
@@ -90,6 +92,15 @@
     dryRun: false
   };
 
+  // 'YYYY-MM-DD HH:MM' -> a local Date. Built by hand rather than passed to
+  // new Date(string), because that parses bare date strings as UTC.
+  function parseDeadline(text) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})$/.exec(String(text).trim());
+    if (!m) throw new Error('deadlineText must look like "2026-09-12 16:30", got: ' + text);
+    return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], 0);
+  }
+  CONFIG.deadline = parseDeadline(CONFIG.deadlineText);
+
   // ===========================================================================
   // State (persisted so the bot can resume after a page navigation)
   // ===========================================================================
@@ -113,6 +124,12 @@
   let busy = false;
 
   const log = (...args) => console.log('%c[UTBOT]', 'color:#bf5700;font-weight:bold', ...args);
+
+  const plusHours = (d, h) => new Date(d.getTime() + h * 3600000);
+  const pad = (n) => String(n).padStart(2, '0');
+  const isoLocal = (d) =>
+    d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+    ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
 
   // ===========================================================================
   // DOM helpers -- text-based so they survive class-name changes, and they
@@ -538,6 +555,13 @@
       log('ok candidate:', findOkButton());
       return rows.length + ' clickable elements';
     },
+    // UTBOT.setDeadline('2026-10-17 16:30')
+    setDeadline(text) {
+      CONFIG.deadline = parseDeadline(text);
+      CONFIG.deadlineText = text;
+      log('deadline set to ' + CONFIG.deadline.toLocaleString());
+      return CONFIG.deadline;
+    },
     testAlert() { state.alerted = false; alertSuccess('TEST -- not a real ticket'); },
     config: CONFIG,
     reset() { localStorage.removeItem(SKEY); log('state cleared'); }
@@ -568,7 +592,14 @@
   checkResumeAfterNavigation();
 
   if (new Date() >= CONFIG.deadline) {
-    log('deadline already passed -- not starting.');
+    console.error(
+      '%c[UTBOT] DEADLINE ALREADY PASSED -- not starting.\n' +
+      'Configured deadline: ' + CONFIG.deadline.toLocaleString() + '\n' +
+      'Right now it is:     ' + new Date().toLocaleString() + '\n\n' +
+      'Set a new one and go, by pasting this (edit the date/time):\n' +
+      "  UTBOT.setDeadline('" + isoLocal(plusHours(new Date(), 4)) + "'); UTBOT.start()",
+      'color:#fff;background:#c00;font-size:13px;padding:6px'
+    );
   } else if (state.alerted) {
     log('already alerted on a previous run. UTBOT.reset() then UTBOT.start() to go again.');
   } else {
