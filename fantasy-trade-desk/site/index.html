@@ -93,8 +93,15 @@ select { background: var(--panel); border: 1px solid var(--line); border-radius:
 .status { font-size: 12.5px; color: var(--ink-2); }
 
 /* verdict */
-.verdict { display: grid; grid-template-columns: 1fr 1fr 1.1fr; gap: 14px; }
-@media (max-width: 980px) { .verdict { grid-template-columns: 1fr 1fr; } .verdict .fair { grid-column: 1 / -1; } }
+.verdict { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.verdict .fair { grid-column: 1 / -1; }
+.fairgrid { display: grid; grid-template-columns: 1.25fr 1fr; gap: 14px 28px; }
+@media (max-width: 860px) { .fairgrid { grid-template-columns: 1fr; } }
+.fairgrid > div { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.fitlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--ink-2); }
+.fitlist li { display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 8px; align-items: baseline; }
+.fitlist b { color: var(--ink); }
+.fitlist .arrow { color: var(--ink-3); }
 @media (max-width: 600px) { .verdict { grid-template-columns: 1fr; } }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 14px; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .vhead { display: flex; align-items: center; gap: 8px; }
@@ -113,7 +120,7 @@ select { background: var(--panel); border: 1px solid var(--line); border-radius:
 /* fairness meter */
 .meter { position: relative; height: 34px; margin: 4px 0 2px; }
 .meter .track { position: absolute; left: 0; right: 0; top: 13px; height: 8px; border-radius: 4px; background: linear-gradient(90deg, var(--a), var(--panel-2) 42%, var(--panel-2) 58%, var(--b)); }
-.meter .zone { position: absolute; top: 9px; height: 16px; left: 44%; width: 12%; border: 1px dashed var(--ink-3); border-radius: 3px; }
+.meter .zone { position: absolute; top: 9px; height: 16px; left: 32.5%; width: 35%; border: 1px dashed var(--ink-3); border-radius: 3px; }
 .meter .needle { position: absolute; top: 2px; width: 4px; height: 30px; margin-left: -2px; border-radius: 2px; background: var(--ink); box-shadow: 0 0 0 2px var(--panel); transition: left .3s; }
 .meter-labels { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--ink-2); gap: 8px; }
 .valrow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 4px 12px; font-size: 12.5px; }
@@ -532,24 +539,66 @@ function teamCard(key) {
     <div class="verdict-line">${line}</div>
   </div>`;
 }
+function fitStats() {
+  const weeks = WEEKS.filter((w) => w >= S.eff);
+  const gain = (tid) => {
+    const k = R.s0.tix[tid]; let reg = 0, po = 0;
+    for (const w of weeks) { const d = R.s1.proj[k][w - 11] - R.s0.proj[k][w - 11]; if (w <= 14) reg += d; else po += d; }
+    return { reg, po, tot: reg + po };
+  };
+  const startsIn = (i, scn, tid) => weeks.filter((w) => lineup(scn.rosters[tid][w], w).some((x) => x.i === i));
+  const pts = (i, ws) => ws.reduce((a, w) => a + MEAN[i][w - 11], 0);
+  const player = (id, from, to) => {
+    const i = BYID[id].idx, before = startsIn(i, R.base, from), after = startsIn(i, R.trade, to);
+    return { i, from, to, before: before.length, after: after.length, ptsBefore: pts(i, before), ptsAfter: pts(i, after) };
+  };
+  return { weeks, gA: gain(S.A), gB: gain(S.B),
+    players: [...[...S.selA].map((id) => player(id, S.A, S.B)), ...[...S.selB].map((id) => player(id, S.B, S.A))] };
+}
 function fairCard() {
-  if (!R.hasTrade) return `<div class="card fair"><h3>Trade fairness</h3><p class="muted small">Value is measured in projected points above the best free agent at each position, from Week ${S.eff} on. In this league the waiver wire is deep, so only points above that level count.</p></div>`;
+  if (!R.hasTrade) return `<div class="card fair"><h3>Trade fairness</h3><p class="muted small" style="margin:0">Fairness is judged on what each team's starting lineup gains or loses. A player who sits on your bench costs you nothing to trade; a player who becomes the other team's starter adds real points for them. Pick players above to compare.</p></div>`;
+  const F = fitStats(), nW = F.weeks.length, A = TEAM[S.A].name, B = TEAM[S.B].name;
+  const gA = F.gA.tot, gB = F.gB.tot;
+  // roster-fit balance: fair when both lineups gain (or lose) about the same
+  const denom = Math.abs(gA) + Math.abs(gB) || 1, bal = (gA - gB) / denom;
+  let label;
+  if (gA > 2 && gB > 2) label = Math.abs(bal) < 0.35 ? "Win-win: both starting lineups improve" : `Win-win, more for ${esc(gA > gB ? A : B)}`;
+  else if (gA <= 2 && gB <= 2) label = gA < -2 && gB < -2 ? "Both starting lineups get worse" : "Little change for either lineup";
+  else label = `Favors ${esc(gA > gB ? A : B)}`;
+  const pos = 50 - Math.max(-1, Math.min(1, bal)) * 50;
+  // neutral value (ignores rosters)
   const sum = (set) => [...set].reduce((a, id) => { const v = vor(BYID[id].idx, R.rep); a.reg += v.reg; a.po += v.po; return a; }, { reg: 0, po: 0 });
-  const gA = sum(S.selA), gB = sum(S.selB);
-  const recvA = gB.reg + gB.po, recvB = gA.reg + gA.po;
-  const tot = recvA + recvB || 1, bal = (recvA - recvB) / tot;   // +: A gets more
-  const pos = 50 - bal * 50;   // left = favors A
-  const label = Math.abs(bal) < 0.12 ? "Fair trade on neutral value" : bal > 0 ? `Favors ${esc(TEAM[S.A].name)}` : `Favors ${esc(TEAM[S.B].name)}`;
+  const vA = sum(S.selA), vB = sum(S.selB), recvA = vB.reg + vB.po, recvB = vA.reg + vA.po;
+  const nbal = (recvA - recvB) / ((recvA + recvB) || 1);
+  const nlabel = Math.abs(nbal) < 0.12 ? "Even" : nbal > 0 ? `Favors ${esc(A)}` : `Favors ${esc(B)}`;
+  const fitLine = (p) => {
+    const col = p.from === S.A ? "a" : "b";
+    const lost = p.before ? `starts <b>${p.before} of ${nW}</b> weeks for ${esc(TEAM[p.from].name)} (${f1(p.ptsBefore)} pts)` : `<b>bench only</b> for ${esc(TEAM[p.from].name)} (0 starts in ${nW} weeks)`;
+    const won = p.after ? `starts <b>${p.after} of ${nW}</b> for ${esc(TEAM[p.to].name)} (${f1(p.ptsAfter)} pts)` : `would sit on ${esc(TEAM[p.to].name)}'s bench`;
+    return `<li><span class="swatch" style="background:var(--${col})"></span><span><b>${esc(PL[p.i].name)}</b> (${PL[p.i].pos}): ${lost} <span class="arrow">→</span> ${won}</span></li>`;
+  };
   return `<div class="card fair">
-    <div class="row" style="justify-content:space-between"><h3>Trade fairness</h3><span class="tag">${label}</span></div>
-    <div class="meter" role="img" aria-label="${label}"><div class="track"></div><div class="zone" data-tip="Within ±12%: fair"></div><div class="needle" style="left:${pos}%"></div></div>
-    <div class="meter-labels"><span>← ${esc(TEAM[S.A].name)} wins</span><span>${esc(TEAM[S.B].name)} wins →</span></div>
-    <div class="valrow">
-      <span class="h">Points above waiver level</span><span class="h">Wk ${S.eff}–14</span><span class="h">Wk 15–17</span>
-      <span>${esc(TEAM[S.A].name)} receives</span><span class="num">${f1(gB.reg)}</span><span class="num">${f1(gB.po)}</span>
-      <span>${esc(TEAM[S.B].name)} receives</span><span class="num">${f1(gA.reg)}</span><span class="num">${f1(gA.po)}</span>
+    <div class="row" style="justify-content:space-between"><h3>Trade fairness · value to each roster</h3><span class="tag">${label}</span></div>
+    <div class="fairgrid">
+      <div>
+        <div class="meter" role="img" aria-label="${label}"><div class="track"></div><div class="zone" data-tip="Both teams gain about the same"></div><div class="needle" style="left:${pos}%"></div></div>
+        <div class="meter-labels"><span>← ${esc(A)} gains more</span><span>${esc(B)} gains more →</span></div>
+        <div class="valrow">
+          <span class="h">Starting-lineup points</span><span class="h">Wk ${S.eff}–14</span><span class="h">Wk 15–17</span>
+          <span>${esc(A)}</span><span>${dl(F.gA.reg, "")}</span><span>${dl(F.gA.po, "")}</span>
+          <span>${esc(B)}</span><span>${dl(F.gB.reg, "")}</span><span>${dl(F.gB.po, "")}</span>
+        </div>
+        <p class="small muted" style="margin:0">Each team sets its best lineup every week. Trading a bench player costs nothing; trading a starter costs only the gap to the next player up.${R.trade.moves.length ? " Includes the roster moves listed below." : ""}</p>
+      </div>
+      <div>
+        <span class="eyebrow">Who starts where (Wk ${S.eff}–17)</span>
+        <ul class="fitlist">${F.players.map(fitLine).join("")}</ul>
+        <div class="valrow" data-tip="Projected points above the best free agent at the position, ignoring who owns the players">
+          <span class="h">Neutral value, ignoring rosters</span><span class="h">${esc(A)}</span><span class="h">${esc(B)}</span>
+          <span>Receives · ${nlabel}</span><span class="num">${f1(recvA)}</span><span class="num">${f1(recvB)}</span>
+        </div>
+      </div>
     </div>
-    <p class="small muted" style="margin:0">Neutral value ignores who owns the players. The team cards show what the trade does for each actual roster.</p>
   </div>`;
 }
 function renderVerdict() { $("verdict").innerHTML = teamCard("A") + teamCard("B") + fairCard(); }
@@ -753,7 +802,8 @@ function renderMethod() {
       <li><b>Whole-league simulation:</b> Weeks 11–14 are played out for all 8 teams thousands of times with the real schedule, then seeded by record and total points. Week 15 semifinals and the two-week final follow. With and without the trade use the same random draws, so the difference comes from the trade, not from luck in the simulation.</li>
       <li><b>Roster limits:</b> when a trade is uneven in player count, the team over the limit drops its least useful player, and the team under it picks up the best free agent (switch this off in the settings).</li>
       <li><b>Timing:</b> ESPN trades sit in league review for up to 72 hours, so a trade agreed now usually counts from Week 12. Change this with "Trade takes effect".</li>
-      <li><b>Fairness:</b> neutral value counts projected points above the best free agent at the position. In a deep 8-team league that bar is high, so two good players are often worth less than one great one.</li>
+      <li><b>Fairness, value to each roster:</b> the main measure is how many projected starting-lineup points each team gains or loses, week by week. A player buried on one bench who starts for the other team is pure gain for the receiver and close to free for the sender, so both teams can come out ahead.</li>
+      <li><b>Neutral value:</b> shown for reference. It counts projected points above the best free agent at the position and ignores who owns the players. In a deep 8-team league that bar is high, so two good players are often worth less than one great one.</li>
     </ul>
     <h3>Data</h3>
     <p>League, rosters, standings, schedule, free agents and Week 11 projections from ESPN. Player stats, play-by-play, injuries and Vegas lines from nflverse (stats through Week ${m.statsThrough === m.week ? m.statsThrough - 1 + " plus Thursday's game" : m.statsThrough}). Built ${m.generated}. Rerun the data build each week to refresh.</p>
