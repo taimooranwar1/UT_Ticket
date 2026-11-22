@@ -526,10 +526,15 @@ print("largest season-total diffs vs ESPN:", diffs[:8])
 print("median diff:", sorted(d[0] for d in diffs)[len(diffs) // 2] if diffs else None)
 
 # ---------------------------------------------------------------- teams / schedule
+members = {m["id"]: m for m in league.get("members", [])}
+def owner_name(t):
+    m = members.get(t.get("primaryOwner") or (t.get("owners") or [None])[0], {})
+    full = " ".join(x.strip() for x in (m.get("firstName", ""), m.get("lastName", "")) if x and x.strip())
+    return " ".join(w[:1].upper() + w[1:] for w in full.split()) or t["name"].strip()
 teams = []
 for t in league["teams"]:
     r = t["record"]["overall"]
-    teams.append(dict(id=t["id"], name=t["name"].strip(), abbrev=t.get("abbrev"), w=r["wins"], l=r["losses"],
+    teams.append(dict(id=t["id"], name=owner_name(t), teamName=t["name"].strip(), abbrev=t.get("abbrev"), w=r["wins"], l=r["losses"],
                       t=r["ties"], pf=round(r["pointsFor"], 2), pa=round(r["pointsAgainst"], 2),
                       seed=t.get("playoffSeed")))
 schedule = []
