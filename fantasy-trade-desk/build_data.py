@@ -560,7 +560,11 @@ data = dict(
               statsThrough=LAST_WEEK, scoring="Full PPR (ESPN standard)",
               lineup=dict(QB=1, RB=2, WR=2, TE=1, FLEX=1, K=1, DST=1, BN=7, IR=1),
               playoffs=dict(teams=4, semis=[15], final=[16, 17], seeding="Record, then total points for"),
-              tradeDeadline="2026-12-02", backtest=BACKTEST,
+              generatedIso=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+              tradeDeadline="2026-12-02",
+              tradeDeadlineIso=datetime.datetime.fromtimestamp(league["settings"]["tradeSettings"]["deadlineDate"] / 1000,
+                                                              datetime.timezone.utc).isoformat(timespec="seconds"),
+              backtest=BACKTEST,
               sdModel=SDM, sigmaWeek=SIGMA_WEEK, shrink=SHRINK, weights=dict(xfp=WX, last4=WL, season=WS)),
     teams=teams, schedule=schedule, players=list(players.values()), nflSchedule=nfl_sched, byes=byes)
 json.dump(data, open(OUT, "w"), separators=(",", ":"))
