@@ -195,6 +195,22 @@ tr.me td { background: color-mix(in srgb, var(--flag) 10%, transparent); }
 .seedcol .lab { text-align: center; font-size: 11.5px; color: var(--ink-2); }
 .seedcol .lab.po { color: var(--ink); font-weight: 600; }
 
+.tf-controls { display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: center; font-size: 12.5px; color: var(--ink-2); }
+.tf-controls label { display: flex; align-items: center; gap: 6px; }
+.pill.ok { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); }
+.ideas { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
+@media (max-width: 420px) { .ideas { grid-template-columns: 1fr; } }
+.idea { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.idea-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; align-items: center; }
+.swap { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; align-items: center; }
+.arrow-big { font-size: 20px; color: var(--ink-3); }
+.tchips { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.tchip { display: flex; align-items: center; gap: 6px; font-size: 12.5px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.idea-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; font-size: 12px; color: var(--ink-2); border-top: 1px solid var(--line); padding-top: 8px; }
+@media (max-width: 420px) { .idea-stats { grid-template-columns: 1fr; } }
+.idea-stats > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.idea-stats .lbl { font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.idea-stats b { color: var(--ink); }
 .player { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); display: flex; flex-direction: column; min-width: 0; }
 .player-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; padding: 10px 12px; border-bottom: 1px solid var(--line); align-items: center; }
 .player-head .nm { font-family: var(--font-display); font-weight: 700; font-size: 1.2rem; }
@@ -255,6 +271,7 @@ tr.me td { background: color-mix(in srgb, var(--flag) 10%, transparent); }
     <button class="tab" role="tab" id="t-reg" aria-selected="true" data-tab="reg">Regular season · Wk 11–14</button>
     <button class="tab" role="tab" id="t-po" aria-selected="false" data-tab="po">Playoffs · Wk 15–17</button>
     <button class="tab" role="tab" id="t-pl" aria-selected="false" data-tab="pl">Players</button>
+    <button class="tab" role="tab" id="t-tf" aria-selected="false" data-tab="tf">Trade finder</button>
     <button class="tab" role="tab" id="t-lg" aria-selected="false" data-tab="lg">League</button>
     <button class="tab" role="tab" id="t-me" aria-selected="false" data-tab="me">Method</button>
   </nav>
@@ -269,7 +286,9 @@ let D, PL, BYID, TEAMS, TEAM, NFLIDX;
 const WEEKS = [11, 12, 13, 14, 15, 16, 17]; let REG = [11, 12, 13, 14];
 const POS_ORDER = { QB: 0, RB: 1, WR: 2, TE: 3, K: 4, DST: 5 };
 const RHO = { QB: 0.45, RB: 0.25, WR: 0.35, TE: 0.3, K: 0.3, DST: 0.35 };
-const S = { A: 8, B: 6, selA: new Set(), selB: new Set(), eff: 12, shrink: 0.25, regw: 0.5, nsim: 6000, fill: true, tab: "reg", focus: "A", ov: {} };
+const S = { A: 8, B: 6, selA: new Set(), selB: new Set(), eff: 12, shrink: 0.25, regw: 0.5, nsim: 6000, fill: true, tab: "reg", focus: "A", ov: {},
+  tf: { team: 8, need: "any", size: "all", partner: 0, winwin: true } };
+let FIND = null;   // cached trade-finder results
 let R = null;   // latest results
 
 const $ = (id) => document.getElementById(id);
@@ -291,12 +310,12 @@ function dl(x, unit = "pts", d = 1, scale = 1) {
 }
 
 function save() {
-  try { localStorage.setItem("tradeDesk", JSON.stringify({ A: S.A, B: S.B, selA: [...S.selA], selB: [...S.selB], eff: S.eff, shrink: S.shrink, regw: S.regw, nsim: S.nsim, fill: S.fill, tab: S.tab, focus: S.focus, ov: S.ov })); } catch (e) {}
+  try { localStorage.setItem("tradeDesk", JSON.stringify({ A: S.A, B: S.B, selA: [...S.selA], selB: [...S.selB], eff: S.eff, shrink: S.shrink, regw: S.regw, nsim: S.nsim, fill: S.fill, tab: S.tab, focus: S.focus, ov: S.ov, tf: S.tf })); } catch (e) {}
 }
 function load() {
   try {
     const o = JSON.parse(localStorage.getItem("tradeDesk") || "null"); if (!o) return false;
-    Object.assign(S, o, { selA: new Set(o.selA || []), selB: new Set(o.selB || []) }); return true;
+    Object.assign(S, o, { selA: new Set(o.selA || []), selB: new Set(o.selB || []), tf: Object.assign({}, S.tf, o.tf || {}) }); return true;
   } catch (e) { return false; }
 }
 
@@ -390,35 +409,39 @@ function worstToDrop(ids, from, keep) {
 }
 function activeCount(ids) { return ids.filter((i) => PL[i].slot !== "IR").length; }
 
-function buildScenario(withTrade) {
-  // returns roster per team per week, plus the roster moves made
-  const rosters = {}, moves = [];
-  for (const t of TEAMS) rosters[t.id] = {};
-  const base = {}; for (const t of TEAMS) base[t.id] = baseRoster(t.id);
-  let post = null;
-  if (withTrade && (S.selA.size || S.selB.size)) {
-    const giveA = [...S.selA].map((id) => BYID[id].idx), giveB = [...S.selB].map((id) => BYID[id].idx);
-    let rA = base[S.A].filter((i) => !giveA.includes(i)).concat(giveB);
-    let rB = base[S.B].filter((i) => !giveB.includes(i)).concat(giveA);
-    const taken = new Set();
-    const fix = (r, t, incoming, before) => {
-      const limit = activeCount(before);
-      while (activeCount(r) > limit) {
-        const d = worstToDrop(r, S.eff, new Set(incoming)); if (d.i === null) break;
-        r = r.filter((x) => x !== d.i); moves.push({ team: t, type: "drop", i: d.i });
-      }
-      if (S.fill) while (activeCount(r) < limit) {
-        const a = bestFaAdd(r, S.eff, taken); if (a.i === null) break;
-        taken.add(a.i); r = r.concat([a.i]); moves.push({ team: t, type: "add", i: a.i, gain: a.gain });
-      }
-      return r;
-    };
-    rA = fix(rA, S.A, giveB, base[S.A]); rB = fix(rB, S.B, giveA, base[S.B]);
-    post = { [S.A]: rA, [S.B]: rB };
+function tradeRosters(A, B, giveA, giveB, fill = S.fill) {
+  // giveA / giveB: player indexes. Applies roster limits (drop least useful / add best free agent).
+  const moves = [], baseA = baseRoster(A), baseB = baseRoster(B);
+  let rA = baseA.filter((i) => !giveA.includes(i)).concat(giveB);
+  let rB = baseB.filter((i) => !giveB.includes(i)).concat(giveA);
+  const taken = new Set();
+  const fix = (r, t, incoming, before) => {
+    const limit = activeCount(before);
+    while (activeCount(r) > limit) {
+      const d = worstToDrop(r, S.eff, new Set(incoming)); if (d.i === null) break;
+      r = r.filter((x) => x !== d.i); moves.push({ team: t, type: "drop", i: d.i });
+    }
+    if (fill) while (activeCount(r) < limit) {
+      const a = bestFaAdd(r, S.eff, taken); if (a.i === null) break;
+      taken.add(a.i); r = r.concat([a.i]); moves.push({ team: t, type: "add", i: a.i, gain: a.gain });
+    }
+    return r;
+  };
+  rA = fix(rA, A, giveB, baseA); rB = fix(rB, B, giveA, baseB);
+  return { post: { [A]: rA, [B]: rB }, moves };
+}
+function makeScenario(post, moves) {
+  const rosters = {};
+  for (const t of TEAMS) {
+    rosters[t.id] = {}; const base = baseRoster(t.id);
+    for (const w of WEEKS) rosters[t.id][w] = (post && post[t.id] && w >= S.eff) ? post[t.id] : base;
   }
-  for (const t of TEAMS) for (const w of WEEKS)
-    rosters[t.id][w] = (post && post[t.id] && w >= S.eff) ? post[t.id] : base[t.id];
-  return { rosters, moves };
+  return { rosters, moves: moves || [] };
+}
+function buildScenario(withTrade) {
+  if (!(withTrade && (S.selA.size || S.selB.size))) return makeScenario(null, []);
+  const t = tradeRosters(S.A, S.B, [...S.selA].map((id) => BYID[id].idx), [...S.selB].map((id) => BYID[id].idx));
+  return makeScenario(t.post, t.moves);
 }
 
 /* ------------------------------------------------------------ Monte Carlo (common random numbers) */
@@ -503,6 +526,7 @@ function run() {
   const s0 = simulate(base, N), s1 = (S.selA.size || S.selB.size) ? simulate(trade, N) : s0;
   const rep = replacement();
   R = { base, trade, s0, s1, rep, hasTrade: !!(S.selA.size || S.selB.size) };
+  FIND = null;
   $("status").textContent = `${N.toLocaleString()} seasons simulated twice with the same random draws · ${Math.round(performance.now() - t0)} ms`;
   render(); save();
 }
@@ -572,27 +596,30 @@ const BANDS = [3, 6, 10];   // |gap| in win-probability points per week: even / 
 const NEEDLE_FULL = 15;
 function erf(x) { const t = 1 / (1 + 0.3275911 * Math.abs(x)); const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x); return x >= 0 ? y : -y; }
 const Phi = (x) => 0.5 * (1 + erf(x / Math.SQRT2));
+function contendersOf(s0, sim, self) {
+  return TEAMS.map((t) => sim.tix[t.id]).filter((k) => k !== sim.tix[self]).sort((a, b) => s0.po[b] - s0.po[a]).slice(0, 3);
+}
+function ewaSims(s0, s1, tid, weeks) {
+  const sm = (D.meta.sigmaWeek || 21) * Math.SQRT2, k = s0.tix[tid], pPo = s0.po[k];
+  let reg = 0, po = 0, nReg = 0, nPo = 0;
+  for (const w of weeks) {
+    const wi = w - 11;
+    if (w <= 14) { reg += s1.wwin[k][wi] - s0.wwin[k][wi]; nReg++; }
+    else {
+      const opp = (sim) => { const c = contendersOf(s0, sim, tid); return c.reduce((a, j) => a + sim.proj[j][wi], 0) / c.length; };
+      po += Phi((s1.proj[k][wi] - opp(s1)) / sm) - Phi((s0.proj[k][wi] - opp(s0)) / sm); nPo++;
+    }
+  }
+  return { reg, po: po * pPo, tot: reg + po * pPo, eff: nReg + nPo * pPo, pPo };
+}
 function fitStats() {
   const weeks = WEEKS.filter((w) => w >= S.eff);
-  const sm = (D.meta.sigmaWeek || 21) * Math.SQRT2;
   const pts = (tid) => {
     const k = R.s0.tix[tid]; let reg = 0, po = 0;
     for (const w of weeks) { const d = R.s1.proj[k][w - 11] - R.s0.proj[k][w - 11]; if (w <= 14) reg += d; else po += d; }
     return { reg, po, tot: reg + po };
   };
-  const contenders = (sim, self) => TEAMS.map((t) => sim.tix[t.id]).filter((k) => k !== sim.tix[self]).sort((a, b) => R.s0.po[b] - R.s0.po[a]).slice(0, 3);
-  const ewa = (tid) => {
-    const k = R.s0.tix[tid], pPo = R.s0.po[k]; let reg = 0, po = 0, nReg = 0, nPo = 0;
-    for (const w of weeks) {
-      const wi = w - 11;
-      if (w <= 14) { reg += R.s1.wwin[k][wi] - R.s0.wwin[k][wi]; nReg++; }
-      else {
-        const opp = (sim) => { const c = contenders(sim, tid); return c.reduce((a, j) => a + sim.proj[j][wi], 0) / c.length; };
-        po += Phi((R.s1.proj[k][wi] - opp(R.s1)) / sm) - Phi((R.s0.proj[k][wi] - opp(R.s0)) / sm); nPo++;
-      }
-    }
-    return { reg, po: po * pPo, tot: reg + po * pPo, eff: nReg + nPo * pPo, pPo };
-  };
+  const ewa = (tid) => ewaSims(R.s0, R.s1, tid, weeks);
   const startsIn = (i, scn, tid) => weeks.filter((w) => lineup(scn.rosters[tid][w], w).some((x) => x.i === i));
   const sumPts = (i, ws) => ws.reduce((a, w) => a + MEAN[i][w - 11], 0);
   const player = (id, from, to) => {
@@ -807,6 +834,183 @@ function renderPlayers() {
   for (const m of R.trade.moves) blocks.push(playerBlock(m.i, `${TEAM[m.team].name} ${m.type === "drop" ? "drops" : "picks up"}`));
   $("panel").innerHTML = `<p class="small muted">Projection = baseline × matchup × game environment × history × chance of playing. Change Health or Adjust to override a projection; everything reruns.</p>` + blocks.join("");
 }
+
+/* ------------------------------------------------------------ trade finder */
+const FIND_POS = ["QB", "RB", "WR", "TE"];
+function teamNeeds(tid) {
+  // starters' weekly points by position vs the league, and bench players who would start elsewhere
+  const weeks = WEEKS.filter((w) => w >= S.eff), nW = weeks.length;
+  const byTeam = {};
+  for (const t of TEAMS) {
+    const ros = baseRoster(t.id), pos = { QB: 0, RB: 0, WR: 0, TE: 0 }, starts = {};
+    for (const w of weeks) for (const x of lineup(ros, w)) {
+      const p = PL[x.i]; if (pos[p.pos] !== undefined) pos[p.pos] += MEAN[x.i][w - 11] / nW;
+      starts[x.i] = (starts[x.i] || 0) + 1;
+    }
+    byTeam[t.id] = { pos, starts, ros };
+  }
+  const out = FIND_POS.map((ps) => {
+    const vals = TEAMS.map((t) => byTeam[t.id].pos[ps]).sort((a, b) => b - a);
+    const mine = byTeam[tid].pos[ps], rank = vals.indexOf(mine) + 1, avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+    // weakest single starter at this position on each other team
+    const avgPts = (i) => weeks.reduce((a, w) => a + MEAN[i][w - 11], 0) / nW;
+    const bench = byTeam[tid].ros.filter((i) => PL[i].pos === ps && (byTeam[tid].starts[i] || 0) <= nW / 2 && PL[i].slot !== "IR")
+      .map((i) => ({ i, v: avgPts(i) }))
+      .filter((b) => TEAMS.some((t) => t.id !== tid && byTeam[t.id].ros.some((j) => PL[j].pos === ps && (byTeam[t.id].starts[j] || 0) > nW / 2 && avgPts(j) < b.v)))
+      .sort((a, b) => b.v - a.v);
+    return { pos: ps, mine, rank, avg, bench };
+  });
+  return out;
+}
+function quickEval(T, P, giveT, giveP, ctx) {
+  // fast screen: deterministic lineup points -> win probability with the league's weekly spread
+  const rT = ctx.base[T].filter((i) => !giveT.includes(i)).concat(giveP);
+  const rP = ctx.base[P].filter((i) => !giveP.includes(i)).concat(giveT);
+  const mu = { [T]: {}, [P]: {} };
+  let ptsT = 0, ptsP = 0;
+  for (const w of ctx.weeks) {
+    mu[T][w] = lineupPts(rT, w); mu[P][w] = lineupPts(rP, w);
+    ptsT += mu[T][w] - ctx.bp[T][w]; ptsP += mu[P][w] - ctx.bp[P][w];
+  }
+  const val = (t, w) => (mu[t] && mu[t][w] !== undefined ? mu[t][w] : ctx.bp[t][w]);
+  const wa = (t) => {
+    let tot = 0;
+    for (const w of ctx.weeks) {
+      if (w <= 14) {
+        const o = ctx.opp[t][w]; if (o === undefined) continue;
+        tot += Phi((val(t, w) - val(o, w)) / ctx.sm) - Phi((ctx.bp[t][w] - ctx.bp[o][w]) / ctx.sm);
+      } else {
+        const c = ctx.cont[t], o1 = c.reduce((a, j) => a + val(j, w), 0) / c.length, o0 = c.reduce((a, j) => a + ctx.bp[j][w], 0) / c.length;
+        tot += (Phi((val(t, w) - o1) / ctx.sm) - Phi((ctx.bp[t][w] - o0) / ctx.sm)) * ctx.pPo[t];
+      }
+    }
+    return tot;
+  };
+  return { ptsT, ptsP, waT: wa(T), waP: wa(P) };
+}
+function findTrades(done, progress) {
+  const o = S.tf, T = o.team, weeks = WEEKS.filter((w) => w >= S.eff);
+  const ctx = { weeks, sm: (D.meta.sigmaWeek || 21) * Math.SQRT2, base: {}, bp: {}, opp: {}, cont: {}, pPo: {} };
+  for (const t of TEAMS) {
+    ctx.base[t.id] = baseRoster(t.id); ctx.bp[t.id] = {}; ctx.opp[t.id] = {};
+    for (const w of weeks) ctx.bp[t.id][w] = lineupPts(ctx.base[t.id], w);
+    for (const m of D.schedule) { if (m.home === t.id) ctx.opp[t.id][m.week] = m.away; if (m.away === t.id) ctx.opp[t.id][m.week] = m.home; }
+    ctx.pPo[t.id] = R.s0.po[R.s0.tix[t.id]];
+    ctx.cont[t.id] = TEAMS.filter((x) => x.id !== t.id).sort((a, b) => R.s0.po[R.s0.tix[b.id]] - R.s0.po[R.s0.tix[a.id]]).slice(0, 3).map((x) => x.id);
+  }
+  const rosVal = (i) => rosValue(i, S.eff);
+  const tradeable = (tid) => ctx.base[tid].filter((i) => FIND_POS.includes(PL[i].pos) && PL[i].slot !== "IR" && rosVal(i) > 0)
+    .sort((a, b) => rosVal(b) - rosVal(a)).slice(0, 12);
+  const mine = tradeable(T);
+  const partners = TEAMS.filter((t) => t.id !== T && (!o.partner || t.id === o.partner)).map((t) => t.id);
+  const pairs = (arr) => { const r = []; for (let a = 0; a < arr.length; a++) for (let b = a + 1; b < arr.length; b++) r.push([arr[a], arr[b]]); return r; };
+  const cands = [];
+  const consider = (P, giveT, giveP) => {
+    if (o.need !== "any" && !giveP.some((i) => PL[i].pos === o.need)) return;
+    const q = quickEval(T, P, giveT, giveP, ctx);
+    if (q.ptsT <= 1) return;
+    if (o.winwin && q.ptsP <= 2) return;
+    cands.push({ P, giveT, giveP, q });
+  };
+  for (const P of partners) {
+    const theirs = tradeable(P);
+    if (o.size === "all" || o.size === "1x1") for (const a of mine) for (const b of theirs) consider(P, [a], [b]);
+    if (o.size === "all" || o.size === "2x1") for (const pr of pairs(mine)) for (const b of theirs) consider(P, pr, [b]);
+    if (o.size === "all" || o.size === "1x2") for (const a of mine) for (const pr of pairs(theirs)) consider(P, [a], pr);
+  }
+  // rank by your wins added, keep variety: at most 2 ideas per incoming player, 3 per partner (when searching all teams)
+  cands.sort((a, b) => b.q.waT - a.q.waT);
+  const perPlayer = {}, perTeam = {}, short = [];
+  for (const c of cands) {
+    if (c.giveP.some((i) => (perPlayer[i] || 0) >= 2)) continue;
+    if (!o.partner && (perTeam[c.P] || 0) >= 3) continue;
+    c.giveP.forEach((i) => (perPlayer[i] = (perPlayer[i] || 0) + 1)); perTeam[c.P] = (perTeam[c.P] || 0) + 1;
+    short.push(c); if (short.length >= 10) break;
+  }
+  // full simulation of the shortlist (same random draws as everything else)
+  const N = Math.min(S.nsim, 3000), base = R.base, s0 = simulate(base, N), out = [];
+  let k = 0;
+  const step = () => {
+    if (k >= short.length) {
+      out.sort((a, b) => b.eT.tot - a.eT.tot);
+      done({ results: out, screened: cands.length, N });
+      return;
+    }
+    const c = short[k++];
+    const tr = tradeRosters(T, c.P, c.giveT, c.giveP, false), scn = makeScenario(tr.post, tr.moves), s1 = simulate(scn, N);
+    const eT = ewaSims(s0, s1, T, weeks), eP = ewaSims(s0, s1, c.P, weeks), effW = (eT.eff + eP.eff) / 2 || 1;
+    const lp = (tid) => weeks.reduce((a, w) => a + s1.proj[s1.tix[tid]][w - 11] - s0.proj[s0.tix[tid]][w - 11], 0);
+    const F = { gA: { tot: lp(T) }, gB: { tot: lp(c.P) }, perA: 100 * eT.tot / effW, perB: 100 * eP.tot / effW, gap: 100 * (eT.tot - eP.tot) / effW };
+    const kt = s0.tix[T], kp = s0.tix[c.P];
+    out.push(Object.assign({}, c, { moves: tr.moves, eT, eP, F, grade: grade(F, TEAM[T].name, TEAM[c.P].name),
+      po: [s0.po[kt], s1.po[kt]], ti: [s0.title[kt], s1.title[kt]], ppo: [s0.po[kp], s1.po[kp]], pti: [s0.title[kp], s1.title[kp]] }));
+    progress(k, short.length);
+    setTimeout(step, 0);
+  };
+  setTimeout(step, 0);
+}
+function finderKey() { return JSON.stringify([S.tf, S.eff, S.shrink, S.fill, S.ov, S.nsim]); }
+function runFinder() {
+  const key = finderKey();
+  FIND = { key, busy: true, results: null };
+  renderFinder();
+  setTimeout(() => findTrades((r) => { if (FIND && FIND.key === key) { FIND = Object.assign({ key, busy: false }, r); if (S.tab === "tf") renderFinder(); } },
+    (i, n) => { const el = $("tf-progress"); if (el) el.textContent = `Simulating the best ideas… ${i} of ${n}`; }), 20);
+}
+function pchip(i, wk) {
+  const p = PL[i], v = rosValue(i, S.eff) / WEEKS.filter((w) => w >= S.eff).length;
+  return `<span class="tchip"><span class="pos">${p.pos}</span> ${esc(p.name)} <span class="muted num">${f1(v)}</span>${injPill(p)}</span>`;
+}
+function renderFinder() {
+  const o = S.tf, T = o.team, tm = TEAM[T];
+  const needs = teamNeeds(T);
+  const needRows = needs.map((n) => {
+    const state = n.rank >= 6 ? `<span class="pill inj">Weak</span>` : n.rank <= 2 ? `<span class="pill ok">Strong</span>` : "";
+    const bench = n.bench.length ? n.bench.map((b) => `${esc(PL[b.i].name)} ${f1(b.v)}`).join(", ") : `<span class="muted">none</span>`;
+    return `<tr><td><b>${n.pos}</b></td><td class="r num">${f1(n.mine)}</td><td class="r num">${n.rank} of 8 ${state}</td><td class="r num">${f1(n.avg)}</td><td>${bench}</td></tr>`;
+  }).join("");
+  const opts = (arr, v) => arr.map(([val, t]) => `<option value="${val}" ${String(v) === String(val) ? "selected" : ""}>${t}</option>`).join("");
+  let body;
+  if (!FIND || FIND.key !== finderKey()) body = `<div class="empty"><button class="btn primary" type="button" id="tf-run">Find trades for ${esc(tm.name)}</button><p class="small muted" style="margin:8px 0 0">Checks every 1-for-1, 2-for-1 and 1-for-2 swap with the other teams, then fully simulates the best ten. Free-agent pickups aren't counted here, since you can make them without a trade (see the League tab).</p></div>`;
+  else if (FIND.busy) body = `<div class="empty" id="tf-progress">Searching every trade combination…</div>`;
+  else if (!FIND.results.length) body = `<div class="empty">No trades found that improve both starting lineups with these filters. Try "Any position", all trade sizes, or turn off "Only win-win".</div>`;
+  else body = `<p class="small muted">Checked ${FIND.screened.toLocaleString()} trades that help ${esc(tm.name)}; the best ${FIND.results.length} were simulated ${FIND.N.toLocaleString()} times each. Sorted by wins added for ${esc(tm.name)}. Free-agent pickups aren't counted; uneven trades only drop the least useful player.</p>
+    <div class="ideas">${FIND.results.map((r, n) => `
+      <article class="idea">
+        <div class="idea-top"><span class="eyebrow">Idea ${n + 1} · with ${esc(TEAM[r.P].name)}</span><span class="grade ${r.grade.key}"><b>${r.grade.label}</b> · ${r.grade.sub}</span></div>
+        <div class="swap">
+          <div><span class="eyebrow">${esc(tm.name)} gives</span><div class="tchips">${r.giveT.map((i) => pchip(i)).join("")}</div></div>
+          <div class="arrow-big" aria-hidden="true">⇄</div>
+          <div><span class="eyebrow">${esc(tm.name)} gets</span><div class="tchips">${r.giveP.map((i) => pchip(i)).join("")}</div></div>
+        </div>
+        <div class="idea-stats">
+          <div><span class="lbl">${esc(tm.name)}</span>
+            <span>Lineup ${dl(r.F.gA.tot, "pts")}</span><span>Wins ${dl(r.eT.tot, "", 2)}</span>
+            <span>Playoffs ${pct(r.po[0])} → <b>${pct(r.po[1])}</b></span><span>Title ${pct(r.ti[0])} → <b>${pct(r.ti[1])}</b></span></div>
+          <div><span class="lbl">${esc(TEAM[r.P].name)}</span>
+            <span>Lineup ${dl(r.F.gB.tot, "pts")}</span><span>Wins ${dl(r.eP.tot, "", 2)}</span>
+            <span>Playoffs ${pct(r.ppo[0])} → <b>${pct(r.ppo[1])}</b></span><span>Title ${pct(r.pti[0])} → <b>${pct(r.pti[1])}</b></span></div>
+        </div>
+        ${r.moves.length ? `<div class="small muted">Roster limits: ${r.moves.map((m) => `${esc(TEAM[m.team].name)} ${m.type === "drop" ? "drops" : "adds"} ${esc(PL[m.i].name)}`).join("; ")}</div>` : ""}
+        <div><button class="btn" type="button" data-load="${n}">Open in trade builder</button></div>
+      </article>`).join("")}</div>`;
+  $("panel").innerHTML = `
+    <div class="tf-controls">
+      <label for="tf-team">Find trades for <select id="tf-team" data-tf="team">${opts(TEAMS.map((t) => [t.id, t.name + (t.id === D.meta.myTeam ? " (you)" : "")]), T)}</select></label>
+      <label for="tf-need">Upgrade at <select id="tf-need" data-tf="need">${opts([["any", "Any position"], ["QB", "QB"], ["RB", "RB"], ["WR", "WR"], ["TE", "TE"]], o.need)}</select></label>
+      <label for="tf-size">Trade size <select id="tf-size" data-tf="size">${opts([["all", "All sizes"], ["1x1", "1 for 1"], ["2x1", "Give 2, get 1"], ["1x2", "Give 1, get 2"]], o.size)}</select></label>
+      <label for="tf-partner">With <select id="tf-partner" data-tf="partner">${opts([[0, "Any team"], ...TEAMS.filter((t) => t.id !== T).map((t) => [t.id, t.name])], o.partner)}</select></label>
+      <label for="tf-ww"><input type="checkbox" id="tf-ww" data-tf="winwin" ${o.winwin ? "checked" : ""}> Only win-win (both lineups improve)</label>
+    </div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between"><h3>${esc(tm.name)}: where the lineup stands</h3><span class="small muted">Weekly starter points, Wk ${S.eff}–17</span></div>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>Pos</th><th class="r">Starters/wk</th><th class="r">League rank</th><th class="r">League avg</th><th>Bench players who'd start elsewhere</th></tr></thead>
+        <tbody>${needRows}</tbody></table></div>
+      <p class="small muted" style="margin:0">Trade from positions with startable bench depth into positions ranked near the bottom. Those are the trades where both sides gain.</p>
+    </div>
+    ${body}`;
+}
 function renderLeague() {
   const s0 = R.s0, s1 = R.s1;
   const order = [...TEAMS].sort((a, b) => s0.po[s0.tix[b.id]] - s0.po[s0.tix[a.id]]);
@@ -870,6 +1074,7 @@ function renderMethod() {
       <li><b>Timing:</b> ESPN trades sit in league review for up to 72 hours, so a trade agreed now usually counts from Week 12. Change this with "Trade takes effect".</li>
       <li><b>Fairness, value to each roster:</b> each team's change in projected starting-lineup points is turned into <b>expected wins added</b>. Regular-season weeks use the simulated change in win chance against the real opponent. Playoff weeks use the change in win chance against a typical playoff team, counted in proportion to the team's playoff odds (a playoff gain only matters if you get there). This league's weekly scores swing about ±${f1(m.sigmaWeek || 21)} points, so near a coin-flip matchup one extra point a week is worth about ${(39.89 / ((m.sigmaWeek || 21) * Math.SQRT2)).toFixed(2)}% win chance.</li>
       <li><b>Grades:</b> the needle shows the gap between the two teams in win chance per week: under 3% is <b>Even</b>, 3–6% an <b>Edge</b>, 6–10% a <b>Big edge</b>, over 10% <b>Lopsided</b>; it reaches the end of the scale at 15% (about ${f1(15 / (39.89 / ((m.sigmaWeek || 21) * Math.SQRT2)))} points a week). The headline describes the outcome: when both starting lineups improve it stays a <b>win-win</b> and names who wins more. A trade is only called <b>Bad</b> or <b>Terrible</b> for a team when its own starting lineup gets worse and the gap is big.</li>
+      <li><b>Trade finder:</b> checks every 1-for-1, 2-for-1 and 1-for-2 trade between the chosen team and the others, using each roster's 12 most valuable QB/RB/WR/TE. Each is screened by expected wins added (lineup points turned into win chance), keeping only trades where both starting lineups improve if "Only win-win" is on. The ten best (at most 3 per partner and 2 per incoming player, for variety) are then simulated in full with playoff odds and the fairness grade. Open roster spots are not filled from free agents here, since those pickups don't need a trade.</li>
       <li><b>Neutral value:</b> shown for reference. It counts projected points above the best free agent at the position and ignores who owns the players. In a deep 8-team league that bar is high, so two good players are often worth less than one great one.</li>
     </ul>
     <h3>Data</h3>
@@ -884,7 +1089,7 @@ function renderMethod() {
 }
 function renderPanel() {
   document.querySelectorAll(".tab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === S.tab)));
-  ({ reg: renderReg, po: renderPo, pl: renderPlayers, lg: renderLeague, me: renderMethod })[S.tab]();
+  ({ reg: renderReg, po: renderPo, pl: renderPlayers, tf: renderFinder, lg: renderLeague, me: renderMethod })[S.tab]();
 }
 function render() {
   renderSide("A"); renderSide("B"); renderVerdict(); renderPanel();
@@ -901,6 +1106,10 @@ document.addEventListener("change", (e) => {
   } else if (t.matches("[data-ov]")) {
     const o = S.ov[t.dataset.id] || (S.ov[t.dataset.id] = {});
     o[t.dataset.ov] = t.dataset.ov === "adj" ? +t.value || 0 : t.value; schedule();
+  } else if (t.matches("[data-tf]")) {
+    const k = t.dataset.tf; S.tf[k] = t.type === "checkbox" ? t.checked : (k === "team" || k === "partner" ? +t.value : t.value);
+    if (k === "team" && S.tf.partner === S.tf.team) S.tf.partner = 0;
+    save(); renderFinder();
   } else if (t.id === "eff") { S.eff = +t.value; schedule(); }
   else if (t.id === "nsim") { S.nsim = +t.value; schedule(); }
   else if (t.id === "fill") { S.fill = t.checked; schedule(); }
@@ -916,6 +1125,12 @@ document.addEventListener("input", (e) => {
 document.addEventListener("click", (e) => {
   const t = e.target.closest("button"); if (!t) return;
   if (t.dataset.tab) { S.tab = t.dataset.tab; renderPanel(); save(); }
+  else if (t.id === "tf-run") runFinder();
+  else if (t.dataset.load !== undefined && FIND && FIND.results) {
+    const r = FIND.results[+t.dataset.load];
+    S.A = S.tf.team; S.B = r.P; S.selA = new Set(r.giveT.map((i) => PL[i].id)); S.selB = new Set(r.giveP.map((i) => PL[i].id));
+    S.tab = "reg"; S.focus = "A"; window.scrollTo({ top: 0, behavior: "smooth" }); schedule();
+  }
   else if (t.dataset.focus) { S.focus = t.dataset.focus; renderPanel(); save(); }
   else if (t.id === "swap") { [S.A, S.B] = [S.B, S.A]; [S.selA, S.selB] = [S.selB, S.selA]; schedule(); }
   else if (t.id === "clear") { S.selA.clear(); S.selB.clear(); schedule(); }
