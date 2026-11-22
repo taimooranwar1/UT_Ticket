@@ -537,6 +537,15 @@ for t in league["teams"]:
     teams.append(dict(id=t["id"], name=owner_name(t), teamName=t["name"].strip(), abbrev=t.get("abbrev"), w=r["wins"], l=r["losses"],
                       t=r["ties"], pf=round(r["pointsFor"], 2), pa=round(r["pointsAgainst"], 2),
                       seed=t.get("playoffSeed")))
+# league weekly scoring spread (pooled SD of each team's weekly score around its own mean)
+_sc = collections.defaultdict(list)
+for m in league["schedule"]:
+    if m.get("winner") in ("HOME", "AWAY", "TIE"):
+        for side in ("home", "away"): _sc[m[side]["teamId"]].append(m[side]["totalPoints"])
+_res = [x - sum(v) / len(v) for v in _sc.values() for x in v]
+SIGMA_WEEK = round(math.sqrt(sum(r * r for r in _res) / max(1, len(_res) - len(_sc))), 2) if _res else 21.0
+print("weekly score SD", SIGMA_WEEK)
+
 schedule = []
 for m in league["schedule"]:
     if m["matchupPeriodId"] in REG_WEEKS:
@@ -552,7 +561,7 @@ data = dict(
               lineup=dict(QB=1, RB=2, WR=2, TE=1, FLEX=1, K=1, DST=1, BN=7, IR=1),
               playoffs=dict(teams=4, semis=[15], final=[16, 17], seeding="Record, then total points for"),
               tradeDeadline="2026-12-02", backtest=BACKTEST,
-              sdModel=SDM, shrink=SHRINK, weights=dict(xfp=WX, last4=WL, season=WS)),
+              sdModel=SDM, sigmaWeek=SIGMA_WEEK, shrink=SHRINK, weights=dict(xfp=WX, last4=WL, season=WS)),
     teams=teams, schedule=schedule, players=list(players.values()), nflSchedule=nfl_sched, byes=byes)
 json.dump(data, open(OUT, "w"), separators=(",", ":"))
 print("wrote", OUT, os.path.getsize(OUT) // 1024, "KB")
