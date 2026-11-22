@@ -287,7 +287,7 @@ const WEEKS = [11, 12, 13, 14, 15, 16, 17]; let REG = [11, 12, 13, 14];
 const POS_ORDER = { QB: 0, RB: 1, WR: 2, TE: 3, K: 4, DST: 5 };
 const RHO = { QB: 0.45, RB: 0.25, WR: 0.35, TE: 0.3, K: 0.3, DST: 0.35 };
 const S = { A: 8, B: 6, selA: new Set(), selB: new Set(), eff: 12, shrink: 0.25, regw: 0.5, nsim: 6000, fill: true, tab: "reg", focus: "A", ov: {},
-  tf: { team: 8, need: "any", size: "all", partner: 0, winwin: true } };
+  tf: { team: 8, need: "any", give: 3, get: 3, partner: 0, winwin: true } };
 let FIND = null;   // cached trade-finder results
 let R = null;   // latest results
 
@@ -315,7 +315,7 @@ function save() {
 function load() {
   try {
     const o = JSON.parse(localStorage.getItem("tradeDesk") || "null"); if (!o) return false;
-    Object.assign(S, o, { selA: new Set(o.selA || []), selB: new Set(o.selB || []), tf: Object.assign({}, S.tf, o.tf || {}) }); return true;
+    Object.assign(S, o, { selA: new Set(o.selA || []), selB: new Set(o.selB || []), tf: Object.assign({}, S.tf, o.tf || {}, { give: (o.tf && o.tf.give) || 3, get: (o.tf && o.tf.get) || 3 }) }); return true;
   } catch (e) { return false; }
 }
 
@@ -862,14 +862,42 @@ function teamNeeds(tid) {
   });
   return out;
 }
+const PCODE = { QB: 0, RB: 1, WR: 2, TE: 3, K: 4, DST: 5 };
+let PC = null;
+function fastPts(sortedBase, give, inc, wi) {
+  // best-lineup points for (base roster − give + inc) in one pass: candidates in descending projection,
+  // each takes its own slot, then FLEX (RB/WR/TE). Greedy is optimal for this slot layout.
+  let qb = 1, rb = 2, wr = 2, te = 1, fx = 1, k = 1, d = 1, left = 9, tot = 0, i = 0, j = 0;
+  const nb = sortedBase.length, ni = inc.length;
+  while (left > 0) {
+    while (i < nb && give.includes(sortedBase[i])) i++;
+    const a = i < nb ? sortedBase[i] : -1, b = j < ni ? inc[j] : -1;
+    if (a < 0 && b < 0) break;
+    let c; if (b < 0 || (a >= 0 && MEAN[a][wi] >= MEAN[b][wi])) { c = a; i++; } else { c = b; j++; }
+    const m = MEAN[c][wi], pc = PC[c];
+    if (pc === 0) { if (qb) { qb--; tot += m; left--; } }
+    else if (pc === 1) { if (rb) { rb--; tot += m; left--; } else if (fx) { fx--; tot += m; left--; } }
+    else if (pc === 2) { if (wr) { wr--; tot += m; left--; } else if (fx) { fx--; tot += m; left--; } }
+    else if (pc === 3) { if (te) { te--; tot += m; left--; } else if (fx) { fx--; tot += m; left--; } }
+    else if (pc === 4) { if (k) { k--; tot += m; left--; } }
+    else if (pc === 5) { if (d) { d--; tot += m; left--; } }
+  }
+  return tot;
+}
 function quickEval(T, P, giveT, giveP, ctx) {
   // fast screen: deterministic lineup points -> win probability with the league's weekly spread
-  const rT = ctx.base[T].filter((i) => !giveT.includes(i)).concat(giveP);
-  const rP = ctx.base[P].filter((i) => !giveP.includes(i)).concat(giveT);
   const mu = { [T]: {}, [P]: {} };
   let ptsT = 0, ptsP = 0;
   for (const w of ctx.weeks) {
-    mu[T][w] = lineupPts(rT, w); mu[P][w] = lineupPts(rP, w);
+    const wi = w - 11;
+    if (w === D.meta.week) {   // week with games already played: use the exact (locked-lineup) path
+      mu[T][w] = lineupPts(ctx.base[T].filter((i) => !giveT.includes(i)).concat(giveP), w);
+      mu[P][w] = lineupPts(ctx.base[P].filter((i) => !giveP.includes(i)).concat(giveT), w);
+    } else {
+      const byM = (a, b) => MEAN[b][wi] - MEAN[a][wi];
+      mu[T][w] = fastPts(ctx.sorted[T][w], giveT, giveP.length > 1 ? giveP.slice().sort(byM) : giveP, wi);
+      mu[P][w] = fastPts(ctx.sorted[P][w], giveP, giveT.length > 1 ? giveT.slice().sort(byM) : giveT, wi);
+    }
     ptsT += mu[T][w] - ctx.bp[T][w]; ptsP += mu[P][w] - ctx.bp[P][w];
   }
   const val = (t, w) => (mu[t] && mu[t][w] !== undefined ? mu[t][w] : ctx.bp[t][w]);
@@ -888,12 +916,23 @@ function quickEval(T, P, giveT, giveP, ctx) {
   };
   return { ptsT, ptsP, waT: wa(T), waP: wa(P) };
 }
+function combos(arr, maxK) {
+  // every group of 1..maxK players; 3-player groups only from the 10 most valuable
+  const out = arr.map((a) => [a]);
+  if (maxK >= 2) for (let a = 0; a < arr.length; a++) for (let b = a + 1; b < arr.length; b++) out.push([arr[a], arr[b]]);
+  if (maxK >= 3) { const top = arr.slice(0, 10); for (let a = 0; a < top.length; a++) for (let b = a + 1; b < top.length; b++) for (let c = b + 1; c < top.length; c++) out.push([top[a], top[b], top[c]]); }
+  return out;
+}
 function findTrades(done, progress) {
   const o = S.tf, T = o.team, weeks = WEEKS.filter((w) => w >= S.eff);
-  const ctx = { weeks, sm: (D.meta.sigmaWeek || 21) * Math.SQRT2, base: {}, bp: {}, opp: {}, cont: {}, pPo: {} };
+  if (!PC) PC = Int8Array.from(PL, (p) => PCODE[p.pos] ?? 9);
+  const ctx = { weeks, sm: (D.meta.sigmaWeek || 21) * Math.SQRT2, base: {}, bp: {}, opp: {}, cont: {}, pPo: {}, sorted: {} };
   for (const t of TEAMS) {
-    ctx.base[t.id] = baseRoster(t.id); ctx.bp[t.id] = {}; ctx.opp[t.id] = {};
-    for (const w of weeks) ctx.bp[t.id][w] = lineupPts(ctx.base[t.id], w);
+    ctx.base[t.id] = baseRoster(t.id); ctx.bp[t.id] = {}; ctx.opp[t.id] = {}; ctx.sorted[t.id] = {};
+    for (const w of weeks) {
+      ctx.bp[t.id][w] = lineupPts(ctx.base[t.id], w);
+      ctx.sorted[t.id][w] = ctx.base[t.id].slice().sort((a, b) => MEAN[b][w - 11] - MEAN[a][w - 11]);
+    }
     for (const m of D.schedule) { if (m.home === t.id) ctx.opp[t.id][m.week] = m.away; if (m.away === t.id) ctx.opp[t.id][m.week] = m.home; }
     ctx.pPo[t.id] = R.s0.po[R.s0.tix[t.id]];
     ctx.cont[t.id] = TEAMS.filter((x) => x.id !== t.id).sort((a, b) => R.s0.po[R.s0.tix[b.id]] - R.s0.po[R.s0.tix[a.id]]).slice(0, 3).map((x) => x.id);
@@ -901,53 +940,61 @@ function findTrades(done, progress) {
   const rosVal = (i) => rosValue(i, S.eff);
   const tradeable = (tid) => ctx.base[tid].filter((i) => FIND_POS.includes(PL[i].pos) && PL[i].slot !== "IR" && rosVal(i) > 0)
     .sort((a, b) => rosVal(b) - rosVal(a)).slice(0, 12);
-  const mine = tradeable(T);
+  const mySets = combos(tradeable(T), o.give);
   const partners = TEAMS.filter((t) => t.id !== T && (!o.partner || t.id === o.partner)).map((t) => t.id);
-  const pairs = (arr) => { const r = []; for (let a = 0; a < arr.length; a++) for (let b = a + 1; b < arr.length; b++) r.push([arr[a], arr[b]]); return r; };
-  const cands = [];
-  const consider = (P, giveT, giveP) => {
-    if (o.need !== "any" && !giveP.some((i) => PL[i].pos === o.need)) return;
-    const q = quickEval(T, P, giveT, giveP, ctx);
-    if (q.ptsT <= 1) return;
-    if (o.winwin && q.ptsP <= 2) return;
-    cands.push({ P, giveT, giveP, q });
-  };
-  for (const P of partners) {
-    const theirs = tradeable(P);
-    if (o.size === "all" || o.size === "1x1") for (const a of mine) for (const b of theirs) consider(P, [a], [b]);
-    if (o.size === "all" || o.size === "2x1") for (const pr of pairs(mine)) for (const b of theirs) consider(P, pr, [b]);
-    if (o.size === "all" || o.size === "1x2") for (const a of mine) for (const pr of pairs(theirs)) consider(P, [a], pr);
-  }
-  // rank by your wins added, keep variety: at most 2 ideas per incoming player, 3 per partner (when searching all teams)
-  cands.sort((a, b) => b.q.waT - a.q.waT);
-  const perPlayer = {}, perTeam = {}, short = [];
-  for (const c of cands) {
-    if (c.giveP.some((i) => (perPlayer[i] || 0) >= 2)) continue;
-    if (!o.partner && (perTeam[c.P] || 0) >= 3) continue;
-    c.giveP.forEach((i) => (perPlayer[i] = (perPlayer[i] || 0) + 1)); perTeam[c.P] = (perTeam[c.P] || 0) + 1;
-    short.push(c); if (short.length >= 10) break;
-  }
-  // full simulation of the shortlist (same random draws as everything else)
-  const N = Math.min(S.nsim, 3000), base = R.base, s0 = simulate(base, N), out = [];
-  let k = 0;
-  const step = () => {
-    if (k >= short.length) {
-      out.sort((a, b) => b.eT.tot - a.eT.tot);
-      done({ results: out, screened: cands.length, N });
-      return;
+  let cands = [], screened = 0, checked = 0;
+  // rank by your wins added; a tiny per-player penalty so a throw-in that adds nothing loses the tie to the simpler trade
+  const rankScore = (c) => c.q.waT - 0.004 * (c.giveT.length + c.giveP.length);
+  const keep = () => { cands.sort((a, b) => rankScore(b) - rankScore(a)); if (cands.length > 15000) cands = cands.slice(0, 15000); };
+  let pi = 0;
+  const screenStep = () => {
+    if (pi < partners.length) {
+      const P = partners[pi++], theirSets = combos(tradeable(P), o.get);
+      for (const giveP of theirSets) {
+        if (o.need !== "any" && !giveP.some((i) => PL[i].pos === o.need)) continue;
+        for (const giveT of mySets) {
+          checked++;
+          const q = quickEval(T, P, giveT, giveP, ctx);
+          if (q.ptsT <= 1 || (o.winwin && q.ptsP <= 2)) continue;
+          screened++; cands.push({ P, giveT, giveP, q });
+          if (cands.length > 30000) keep();
+        }
+      }
+      progress(`Searching ${esc(TEAM[P].name)}'s roster… ${pi} of ${partners.length} teams · ${checked.toLocaleString()} trades checked`);
+      setTimeout(screenStep, 0); return;
     }
-    const c = short[k++];
-    const tr = tradeRosters(T, c.P, c.giveT, c.giveP, false), scn = makeScenario(tr.post, tr.moves), s1 = simulate(scn, N);
-    const eT = ewaSims(s0, s1, T, weeks), eP = ewaSims(s0, s1, c.P, weeks), effW = (eT.eff + eP.eff) / 2 || 1;
-    const lp = (tid) => weeks.reduce((a, w) => a + s1.proj[s1.tix[tid]][w - 11] - s0.proj[s0.tix[tid]][w - 11], 0);
-    const F = { gA: { tot: lp(T) }, gB: { tot: lp(c.P) }, perA: 100 * eT.tot / effW, perB: 100 * eP.tot / effW, gap: 100 * (eT.tot - eP.tot) / effW };
-    const kt = s0.tix[T], kp = s0.tix[c.P];
-    out.push(Object.assign({}, c, { moves: tr.moves, eT, eP, F, grade: grade(F, TEAM[T].name, TEAM[c.P].name),
-      po: [s0.po[kt], s1.po[kt]], ti: [s0.title[kt], s1.title[kt]], ppo: [s0.po[kp], s1.po[kp]], pti: [s0.title[kp], s1.title[kp]] }));
-    progress(k, short.length);
+    keep(); shortlistAndSim();
+  };
+  const shortlistAndSim = () => {
+    // variety: at most 2 ideas per incoming player, 3 per partner (when searching all teams)
+    const perPlayer = {}, perTeam = {}, short = [];
+    const sub = (a, b) => a.every((x) => b.includes(x));
+    const nested = (c, d) => c.P === d.P && ((sub(d.giveT, c.giveT) && sub(d.giveP, c.giveP)) || (sub(c.giveT, d.giveT) && sub(c.giveP, d.giveP)));
+    for (const c of cands) {
+      if (short.some((d) => nested(c, d))) continue;   // same deal with a throw-in added or removed
+      if (c.giveP.some((i) => (perPlayer[i] || 0) >= 2)) continue;
+      if (!o.partner && (perTeam[c.P] || 0) >= 3) continue;
+      c.giveP.forEach((i) => (perPlayer[i] = (perPlayer[i] || 0) + 1)); perTeam[c.P] = (perTeam[c.P] || 0) + 1;
+      short.push(c); if (short.length >= 10) break;
+    }
+    const N = Math.min(S.nsim, 3000), s0 = simulate(R.base, N), out = [];
+    let k = 0;
+    const step = () => {
+      if (k >= short.length) { out.sort((a, b) => (b.eT.tot - 0.004 * (b.giveT.length + b.giveP.length)) - (a.eT.tot - 0.004 * (a.giveT.length + a.giveP.length))); done({ results: out, screened, checked, N }); return; }
+      const c = short[k++];
+      const tr = tradeRosters(T, c.P, c.giveT, c.giveP, false), scn = makeScenario(tr.post, tr.moves), s1 = simulate(scn, N);
+      const eT = ewaSims(s0, s1, T, weeks), eP = ewaSims(s0, s1, c.P, weeks), effW = (eT.eff + eP.eff) / 2 || 1;
+      const lp = (tid) => weeks.reduce((a, w) => a + s1.proj[s1.tix[tid]][w - 11] - s0.proj[s0.tix[tid]][w - 11], 0);
+      const F = { gA: { tot: lp(T) }, gB: { tot: lp(c.P) }, perA: 100 * eT.tot / effW, perB: 100 * eP.tot / effW, gap: 100 * (eT.tot - eP.tot) / effW };
+      const kt = s0.tix[T], kp = s0.tix[c.P];
+      out.push(Object.assign({}, c, { moves: tr.moves, eT, eP, F, grade: grade(F, TEAM[T].name, TEAM[c.P].name),
+        po: [s0.po[kt], s1.po[kt]], ti: [s0.title[kt], s1.title[kt]], ppo: [s0.po[kp], s1.po[kp]], pti: [s0.title[kp], s1.title[kp]] }));
+      progress(`Simulating the best ideas… ${k} of ${short.length}`);
+      setTimeout(step, 0);
+    };
     setTimeout(step, 0);
   };
-  setTimeout(step, 0);
+  setTimeout(screenStep, 0);
 }
 function finderKey() { return JSON.stringify([S.tf, S.eff, S.shrink, S.fill, S.ov, S.nsim]); }
 function runFinder() {
@@ -955,7 +1002,7 @@ function runFinder() {
   FIND = { key, busy: true, results: null };
   renderFinder();
   setTimeout(() => findTrades((r) => { if (FIND && FIND.key === key) { FIND = Object.assign({ key, busy: false }, r); if (S.tab === "tf") renderFinder(); } },
-    (i, n) => { const el = $("tf-progress"); if (el) el.textContent = `Simulating the best ideas… ${i} of ${n}`; }), 20);
+    (msg) => { const el = $("tf-progress"); if (el) el.innerHTML = msg; }), 20);
 }
 function pchip(i, wk) {
   const p = PL[i], v = rosValue(i, S.eff) / WEEKS.filter((w) => w >= S.eff).length;
@@ -971,10 +1018,10 @@ function renderFinder() {
   }).join("");
   const opts = (arr, v) => arr.map(([val, t]) => `<option value="${val}" ${String(v) === String(val) ? "selected" : ""}>${t}</option>`).join("");
   let body;
-  if (!FIND || FIND.key !== finderKey()) body = `<div class="empty"><button class="btn primary" type="button" id="tf-run">Find trades for ${esc(tm.name)}</button><p class="small muted" style="margin:8px 0 0">Checks every 1-for-1, 2-for-1 and 1-for-2 swap with the other teams, then fully simulates the best ten. Free-agent pickups aren't counted here, since you can make them without a trade (see the League tab).</p></div>`;
+  if (!FIND || FIND.key !== finderKey()) body = `<div class="empty"><button class="btn primary" type="button" id="tf-run">Find trades for ${esc(tm.name)}</button><p class="small muted" style="margin:8px 0 0">Checks every trade of up to ${o.give} player${o.give > 1 ? "s" : ""} out and ${o.get} in with the other teams, then fully simulates the best ten. Free-agent pickups aren't counted here, since you can make them without a trade (see the League tab).</p></div>`;
   else if (FIND.busy) body = `<div class="empty" id="tf-progress">Searching every trade combination…</div>`;
-  else if (!FIND.results.length) body = `<div class="empty">No trades found that improve both starting lineups with these filters. Try "Any position", all trade sizes, or turn off "Only win-win".</div>`;
-  else body = `<p class="small muted">Checked ${FIND.screened.toLocaleString()} trades that help ${esc(tm.name)}; the best ${FIND.results.length} were simulated ${FIND.N.toLocaleString()} times each. Sorted by wins added for ${esc(tm.name)}. Free-agent pickups aren't counted; uneven trades only drop the least useful player.</p>
+  else if (!FIND.results.length) body = `<div class="empty">No trades found that improve both starting lineups with these filters. Try "Any position", up to 3 players each way, or turn off "Only win-win".</div>`;
+  else body = `<p class="small muted">Checked ${FIND.checked.toLocaleString()} trades; ${FIND.screened.toLocaleString()} help ${esc(tm.name)}${o.winwin ? " and improve both lineups" : ""}. The best ${FIND.results.length} were simulated ${FIND.N.toLocaleString()} times each. Sorted by wins added for ${esc(tm.name)}. Free-agent pickups aren't counted; uneven trades only drop the least useful player.</p>
     <div class="ideas">${FIND.results.map((r, n) => `
       <article class="idea">
         <div class="idea-top"><span class="eyebrow">Idea ${n + 1} · with ${esc(TEAM[r.P].name)}</span><span class="grade ${r.grade.key}"><b>${r.grade.label}</b> · ${r.grade.sub}</span></div>
@@ -998,7 +1045,8 @@ function renderFinder() {
     <div class="tf-controls">
       <label for="tf-team">Find trades for <select id="tf-team" data-tf="team">${opts(TEAMS.map((t) => [t.id, t.name + (t.id === D.meta.myTeam ? " (you)" : "")]), T)}</select></label>
       <label for="tf-need">Upgrade at <select id="tf-need" data-tf="need">${opts([["any", "Any position"], ["QB", "QB"], ["RB", "RB"], ["WR", "WR"], ["TE", "TE"]], o.need)}</select></label>
-      <label for="tf-size">Trade size <select id="tf-size" data-tf="size">${opts([["all", "All sizes"], ["1x1", "1 for 1"], ["2x1", "Give 2, get 1"], ["1x2", "Give 1, get 2"]], o.size)}</select></label>
+      <label for="tf-give">You give up to <select id="tf-give" data-tf="give">${opts([[1, "1 player"], [2, "2 players"], [3, "3 players"]], o.give)}</select></label>
+      <label for="tf-get">You get up to <select id="tf-get" data-tf="get">${opts([[1, "1 player"], [2, "2 players"], [3, "3 players"]], o.get)}</select></label>
       <label for="tf-partner">With <select id="tf-partner" data-tf="partner">${opts([[0, "Any team"], ...TEAMS.filter((t) => t.id !== T).map((t) => [t.id, t.name])], o.partner)}</select></label>
       <label for="tf-ww"><input type="checkbox" id="tf-ww" data-tf="winwin" ${o.winwin ? "checked" : ""}> Only win-win (both lineups improve)</label>
     </div>
@@ -1074,7 +1122,7 @@ function renderMethod() {
       <li><b>Timing:</b> ESPN trades sit in league review for up to 72 hours, so a trade agreed now usually counts from Week 12. Change this with "Trade takes effect".</li>
       <li><b>Fairness, value to each roster:</b> each team's change in projected starting-lineup points is turned into <b>expected wins added</b>. Regular-season weeks use the simulated change in win chance against the real opponent. Playoff weeks use the change in win chance against a typical playoff team, counted in proportion to the team's playoff odds (a playoff gain only matters if you get there). This league's weekly scores swing about ±${f1(m.sigmaWeek || 21)} points, so near a coin-flip matchup one extra point a week is worth about ${(39.89 / ((m.sigmaWeek || 21) * Math.SQRT2)).toFixed(2)}% win chance.</li>
       <li><b>Grades:</b> the needle shows the gap between the two teams in win chance per week: under 3% is <b>Even</b>, 3–6% an <b>Edge</b>, 6–10% a <b>Big edge</b>, over 10% <b>Lopsided</b>; it reaches the end of the scale at 15% (about ${f1(15 / (39.89 / ((m.sigmaWeek || 21) * Math.SQRT2)))} points a week). The headline describes the outcome: when both starting lineups improve it stays a <b>win-win</b> and names who wins more. A trade is only called <b>Bad</b> or <b>Terrible</b> for a team when its own starting lineup gets worse and the gap is big.</li>
-      <li><b>Trade finder:</b> checks every 1-for-1, 2-for-1 and 1-for-2 trade between the chosen team and the others, using each roster's 12 most valuable QB/RB/WR/TE. Each is screened by expected wins added (lineup points turned into win chance), keeping only trades where both starting lineups improve if "Only win-win" is on. The ten best (at most 3 per partner and 2 per incoming player, for variety) are then simulated in full with playoff odds and the fairness grade. Open roster spots are not filled from free agents here, since those pickups don't need a trade.</li>
+      <li><b>Trade finder:</b> checks every trade of 1 to 3 players each way (any mix, such as 3-for-1 or 2-for-3) between the chosen team and the others, using each roster's 12 most valuable QB/RB/WR/TE (3-player groups from the top 10). Each is screened by expected wins added (lineup points turned into win chance), keeping only trades where both starting lineups improve if "Only win-win" is on. The ten best (at most 3 per partner and 2 per incoming player, for variety) are then simulated in full with playoff odds and the fairness grade. Open roster spots are not filled from free agents here, since those pickups don't need a trade.</li>
       <li><b>Neutral value:</b> shown for reference. It counts projected points above the best free agent at the position and ignores who owns the players. In a deep 8-team league that bar is high, so two good players are often worth less than one great one.</li>
     </ul>
     <h3>Data</h3>
@@ -1107,7 +1155,7 @@ document.addEventListener("change", (e) => {
     const o = S.ov[t.dataset.id] || (S.ov[t.dataset.id] = {});
     o[t.dataset.ov] = t.dataset.ov === "adj" ? +t.value || 0 : t.value; schedule();
   } else if (t.matches("[data-tf]")) {
-    const k = t.dataset.tf; S.tf[k] = t.type === "checkbox" ? t.checked : (k === "team" || k === "partner" ? +t.value : t.value);
+    const k = t.dataset.tf; S.tf[k] = t.type === "checkbox" ? t.checked : (["team", "partner", "give", "get"].includes(k) ? +t.value : t.value);
     if (k === "team" && S.tf.partner === S.tf.team) S.tf.partner = 0;
     save(); renderFinder();
   } else if (t.id === "eff") { S.eff = +t.value; schedule(); }
