@@ -124,9 +124,9 @@ select { background: var(--panel); border: 1px solid var(--line); border-radius:
 .band { position: absolute; top: 0; bottom: 0; }
 .band.b-fair { background: color-mix(in srgb, var(--good) 45%, var(--panel)); }
 .band.b-good { background: color-mix(in srgb, var(--good) 18%, var(--panel)); }
-.band.b-bad { background: color-mix(in srgb, var(--serious) 40%, var(--panel)); }
-.band.b-terr { background: color-mix(in srgb, var(--bad) 55%, var(--panel)); }
-.bandlabels { display: grid; grid-template-columns: 15fr 17.5fr 10fr 15fr 10fr 17.5fr 15fr; font-size: 10.5px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .05em; text-align: center; }
+.band.b-bad { background: color-mix(in srgb, var(--serious) 28%, var(--panel)); }
+.band.b-terr { background: color-mix(in srgb, var(--bad) 38%, var(--panel)); }
+.bandlabels { display: grid; grid-template-columns: 16.667fr 13.333fr 10fr 20fr 10fr 13.333fr 16.667fr; font-size: 10.5px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .05em; text-align: center; }
 @media (max-width: 520px) { .bandlabels { display: none; } }
 .grade { font-size: 12.5px; padding: 3px 9px; border-radius: 4px; border: 1px solid var(--line); color: var(--ink-2); }
 .grade b { color: var(--ink); }
@@ -560,9 +560,8 @@ function teamCard(key) {
    Regular season: simulated change in win chance vs the real opponent each week.
    Playoff weeks: change in win chance vs a typical playoff team (normal model, sd = league weekly sd × √2),
    counted in proportion to the team's chance of being in the playoffs. The needle shows the gap per week. */
-const GRADES = [   // |gap| in win-probability points per week
-  { max: 1.5, key: "fair" }, { max: 3.5, key: "good" }, { max: 7, key: "bad" }, { max: Infinity, key: "terrible" }];
-const NEEDLE_FULL = 10;
+const BANDS = [3, 6, 10];   // |gap| in win-probability points per week: even / edge / big edge / lopsided
+const NEEDLE_FULL = 15;
 function erf(x) { const t = 1 / (1 + 0.3275911 * Math.abs(x)); const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x); return x >= 0 ? y : -y; }
 const Phi = (x) => 0.5 * (1 + erf(x / Math.SQRT2));
 function fitStats() {
@@ -598,14 +597,19 @@ function fitStats() {
     players: [...[...S.selA].map((id) => player(id, S.A, S.B)), ...[...S.selB].map((id) => player(id, S.B, S.A))] };
 }
 function grade(F, A, B) {
-  const g = Math.abs(F.gap), key = GRADES.find((x) => g <= x.max).key;
+  // Band = size of the gap. Headline = outcome: if both starting lineups improve it stays a win-win.
+  const g = Math.abs(F.gap), band = g < BANDS[0] ? 0 : g < BANDS[1] ? 1 : g < BANDS[2] ? 2 : 3;
   const winner = esc(F.gap > 0 ? A : B), loser = esc(F.gap > 0 ? B : A);
-  if (key === "fair") return F.perA >= 1 && F.perB >= 1
-    ? { key: "great", label: "Great trade", sub: "Fair, and both teams get better" }
-    : { key: "fair", label: "Fair trade", sub: "Neither side gains meaningfully more" };
-  if (key === "good") return { key: "good", label: "Good trade", sub: `Slight edge to ${winner}` };
-  if (key === "bad") return { key: "bad", label: `Bad for ${loser}`, sub: `Lopsided toward ${winner}` };
-  return { key: "terrible", label: `Terrible for ${loser}`, sub: `${winner} wins it by a lot` };
+  const bothUp = F.gA.tot > 2 && F.gB.tot > 2;
+  const loserLineup = F.gap > 0 ? F.gB.tot : F.gA.tot;
+  if (band === 0) return bothUp ? { key: "great", label: "Great trade", sub: "Win-win, close to even" } : { key: "fair", label: "Fair trade", sub: "Neither side gains meaningfully more" };
+  if (bothUp) return [null,
+    { key: "great", label: "Win-win", sub: `Slight edge to ${winner}` },
+    { key: "good", label: "Win-win", sub: `Bigger win for ${winner}` },
+    { key: "good", label: "Lopsided win-win", sub: `${winner} gains far more` }][band];
+  if (band === 1) return { key: "good", label: "Good trade", sub: `Edge to ${winner}` };
+  if (band === 2) return loserLineup < -2 ? { key: "bad", label: `Bad for ${loser}`, sub: `Big edge to ${winner}` } : { key: "good", label: "Uneven trade", sub: `Big edge to ${winner}` };
+  return loserLineup < -2 ? { key: "terrible", label: `Terrible for ${loser}`, sub: `${winner} wins it by a lot` } : { key: "bad", label: "Lopsided trade", sub: `${winner} wins it by a lot` };
 }
 function fairCard() {
   if (!R.hasTrade) return `<div class="card fair"><h3>Trade fairness</h3><p class="muted small" style="margin:0">Fairness is judged on what each team's starting lineup gains or loses, turned into extra wins. A player who sits on your bench costs you nothing to trade; a player who becomes the other team's starter adds real wins for them. Pick players above to compare.</p></div>`;
@@ -632,10 +636,10 @@ function fairCard() {
     <div class="fairgrid">
       <div>
         <div class="meter" role="img" aria-label="${G.label}: ${G.sub}">
-          <div class="track">${band(0, 1.5, "b-fair")}${band(1.5, 3.5, "b-good")}${band(3.5, 7, "b-bad")}${band(7, NEEDLE_FULL, "b-terr")}</div>
+          <div class="track">${band(0, BANDS[0], "b-fair")}${band(BANDS[0], BANDS[1], "b-good")}${band(BANDS[1], BANDS[2], "b-bad")}${band(BANDS[2], NEEDLE_FULL, "b-terr")}</div>
           <div class="needle" style="left:${pos}%" data-tip="${esc(F.gap >= 0 ? A : B)} gains ${Math.abs(F.gap).toFixed(1)} more percentage points of win chance per week"></div>
         </div>
-        <div class="bandlabels" aria-hidden="true"><span>Terrible</span><span>Bad</span><span>Good</span><span>Fair</span><span>Good</span><span>Bad</span><span>Terrible</span></div>
+        <div class="bandlabels" aria-hidden="true"><span>Lopsided</span><span>Big edge</span><span>Edge</span><span>Even</span><span>Edge</span><span>Big edge</span><span>Lopsided</span></div>
         <div class="meter-labels"><span>← ${esc(A)} gains more</span><span class="num">${Math.abs(F.gap).toFixed(1)}% win chance/week gap</span><span>${esc(B)} gains more →</span></div>
         <div class="valrow four">
           <span class="h"></span><span class="h">Lineup pts</span><span class="h">Wins added, Wk ${S.eff}–14</span><span class="h">Wk 15–17</span>
@@ -857,7 +861,7 @@ function renderMethod() {
       <li><b>Roster limits:</b> when a trade is uneven in player count, the team over the limit drops its least useful player, and the team under it picks up the best free agent (switch this off in the settings).</li>
       <li><b>Timing:</b> ESPN trades sit in league review for up to 72 hours, so a trade agreed now usually counts from Week 12. Change this with "Trade takes effect".</li>
       <li><b>Fairness, value to each roster:</b> each team's change in projected starting-lineup points is turned into <b>expected wins added</b>. Regular-season weeks use the simulated change in win chance against the real opponent. Playoff weeks use the change in win chance against a typical playoff team, counted in proportion to the team's playoff odds (a playoff gain only matters if you get there). This league's weekly scores swing about ±${f1(m.sigmaWeek || 21)} points, so near a coin-flip matchup one extra point a week is worth about ${(39.89 / ((m.sigmaWeek || 21) * Math.SQRT2)).toFixed(2)}% win chance.</li>
-      <li><b>Grades:</b> the needle shows the gap between the two teams in win chance per week. Within 1.5% is <b>Fair</b> (<b>Great</b> if both teams also gain at least 1% a week), 1.5–3.5% is <b>Good</b> with a slight edge, 3.5–7% is <b>Bad</b> for the losing side, over 7% is <b>Terrible</b>. The needle reaches the edge at 10%, about ${f1(10 / (39.89 / ((m.sigmaWeek || 21) * Math.SQRT2)))} points a week. A player buried on one bench who starts for the other team is pure gain for the receiver and close to free for the sender, so both teams can come out ahead.</li>
+      <li><b>Grades:</b> the needle shows the gap between the two teams in win chance per week: under 3% is <b>Even</b>, 3–6% an <b>Edge</b>, 6–10% a <b>Big edge</b>, over 10% <b>Lopsided</b>; it reaches the end of the scale at 15% (about ${f1(15 / (39.89 / ((m.sigmaWeek || 21) * Math.SQRT2)))} points a week). The headline describes the outcome: when both starting lineups improve it stays a <b>win-win</b> and names who wins more. A trade is only called <b>Bad</b> or <b>Terrible</b> for a team when its own starting lineup gets worse and the gap is big.</li>
       <li><b>Neutral value:</b> shown for reference. It counts projected points above the best free agent at the position and ignores who owns the players. In a deep 8-team league that bar is high, so two good players are often worth less than one great one.</li>
     </ul>
     <h3>Data</h3>
